@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
 
 from app.core.rate_limit import limiter, rate_limit_exceeded_handler
-from app.routers import auth, cart, categories, orders, products, webhooks
+from app.routers import addresses, auth, cart, categories, orders, products, webhooks
 
 app = FastAPI(title="E-Commerce Backend", version="0.1.0")
 
@@ -24,6 +24,7 @@ app.include_router(products.router, prefix="/api/v1")
 app.include_router(cart.router, prefix="/api/v1")
 app.include_router(orders.router, prefix="/api/v1")
 app.include_router(webhooks.router, prefix="/api/v1")
+app.include_router(addresses.router, prefix="/api/v1")
 
 
 @app.get("/api/v1/health", tags=["system"])
