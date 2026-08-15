@@ -2,10 +2,12 @@ import uuid
 from datetime import date, timedelta
 from decimal import Decimal
 
+import stripe
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.deps import get_current_user
 from app.database import get_db
 from app.models.address import Address
@@ -14,6 +16,9 @@ from app.models.order import Order, OrderItem, OrderStatus
 from app.models.product import Product
 from app.models.user import User
 from app.schemas.order import CreateOrderRequest, OrderListResponse, OrderOut
+from app.schemas.payment import PaymentIntentResponse
+
+stripe.api_key = settings.STRIPE_SECRET_KEY
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -184,3 +189,34 @@ async def cancel_order(
     await db.commit()
     await db.refresh(order)
     return await _order_to_out(db, order)
+
+
+@router.post("/{order_id}/pay", response_model=PaymentIntentResponse)
+async def pay_order(
+    order_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> PaymentIntentResponse:
+    order = await _get_owned_order(db, user, order_id)
+    if order.status != OrderStatus.pending:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only pending orders can be paid",
+        )
+
+    if order.payment_intent_id:
+        payment_intent = stripe.PaymentIntent.retrieve(order.payment_intent_id)
+    else:
+        payment_intent = stripe.PaymentIntent.create(
+            amount=int(order.total_amount * 100),
+            currency="php",
+            metadata={"order_id": str(order.id)},
+        )
+        order.payment_intent_id = payment_intent.id
+        await db.commit()
+
+    return PaymentIntentResponse(
+        client_secret=payment_intent.client_secret,
+        order_id=order.id,
+        amount=order.total_amount,
+    )
