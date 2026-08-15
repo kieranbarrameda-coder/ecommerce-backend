@@ -4,12 +4,15 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.deps import get_current_admin_user
 from app.database import get_db
 from app.models.category import Category
 from app.models.product import Product
-from app.schemas.product import ProductListResponse, ProductOut
+from app.models.user import User
+from app.schemas.product import ProductCreate, ProductListResponse, ProductOut, ProductUpdate
 
 router = APIRouter(prefix="/products", tags=["products"])
 
@@ -67,4 +70,77 @@ async def get_product(product_id: uuid.UUID, db: AsyncSession = Depends(get_db))
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Product not found",
         )
+    return ProductOut.model_validate(product)
+
+
+async def _ensure_category_exists(db: AsyncSession, category_id: uuid.UUID) -> None:
+    category = await db.get(Category, category_id)
+    if category is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Category not found",
+        )
+
+
+@router.post("", response_model=ProductOut, status_code=status.HTTP_201_CREATED)
+async def create_product(
+    body: ProductCreate,
+    user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> ProductOut:
+    if body.category_id is not None:
+        await _ensure_category_exists(db, body.category_id)
+
+    product = Product(
+        category_id=body.category_id,
+        name=body.name,
+        description=body.description,
+        price=body.price,
+        stock_quantity=body.stock_quantity,
+        sku=body.sku,
+        image_urls=body.image_urls,
+        is_active=body.is_active,
+    )
+    db.add(product)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Product with this SKU already exists",
+        )
+    await db.refresh(product)
+    return ProductOut.model_validate(product)
+
+
+@router.patch("/{product_id}", response_model=ProductOut)
+async def update_product(
+    product_id: uuid.UUID,
+    body: ProductUpdate,
+    user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> ProductOut:
+    product = await db.get(Product, product_id)
+    if product is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Product not found",
+        )
+
+    if body.category_id is not None:
+        await _ensure_category_exists(db, body.category_id)
+
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(product, field, value)
+
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Product with this SKU already exists",
+        )
+    await db.refresh(product)
     return ProductOut.model_validate(product)
