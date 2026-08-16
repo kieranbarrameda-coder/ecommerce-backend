@@ -56,3 +56,7 @@ class ProductUpdate(BaseModel):
     sku: Optional[str] = None
     image_urls: Optional[list[str]] = None
     is_active: Optional[bool] = None
+
+
+class ImageUploadResponse(BaseModel):
+    image_urls: list[str]

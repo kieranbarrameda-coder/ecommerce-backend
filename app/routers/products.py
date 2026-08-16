@@ -2,17 +2,34 @@ import uuid
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+import cloudinary
+from cloudinary import uploader
+from cloudinary.exceptions import Error as CloudinaryError
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.deps import get_current_admin_user
 from app.database import get_db
 from app.models.category import Category
 from app.models.product import Product
 from app.models.user import User
-from app.schemas.product import ProductCreate, ProductListResponse, ProductOut, ProductUpdate
+from app.schemas.product import (
+    ImageUploadResponse,
+    ProductCreate,
+    ProductListResponse,
+    ProductOut,
+    ProductUpdate,
+)
+
+cloudinary.config(
+    cloud_name=settings.CLOUDINARY_CLOUD_NAME,
+    api_key=settings.CLOUDINARY_API_KEY,
+    api_secret=settings.CLOUDINARY_API_SECRET,
+)
 
 router = APIRouter(prefix="/products", tags=["products"])
 
@@ -144,3 +161,45 @@ async def update_product(
         )
     await db.refresh(product)
     return ProductOut.model_validate(product)
+
+
+@router.post("/{product_id}/images", response_model=ImageUploadResponse)
+async def upload_product_images(
+    product_id: uuid.UUID,
+    files: list[UploadFile] = File(...),
+    user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> ImageUploadResponse:
+    product = await db.get(Product, product_id)
+    if product is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Product not found",
+        )
+
+    for file in files:
+        if file.content_type is None or not file.content_type.startswith("image/"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Only image files are allowed",
+            )
+
+    new_urls = []
+    for file in files:
+        try:
+            result = await run_in_threadpool(
+                uploader.upload,
+                file.file,
+                folder=f"products/{product_id}/",
+            )
+        except CloudinaryError:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Image upload failed",
+            )
+        new_urls.append(result["secure_url"])
+
+    product.image_urls = [*product.image_urls, *new_urls]
+    await db.commit()
+    await db.refresh(product)
+    return ImageUploadResponse(image_urls=product.image_urls)
