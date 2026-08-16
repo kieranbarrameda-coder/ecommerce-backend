@@ -25,6 +25,15 @@ class LogoutRequest(BaseModel):
     refresh_token: str
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str = Field(min_length=8)
+
+
 class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

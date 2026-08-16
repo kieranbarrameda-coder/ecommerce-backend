@@ -13,4 +13,5 @@ slowapi
 python-dotenv
 stripe
 cloudinary
+resend[async]
 python-multipart
