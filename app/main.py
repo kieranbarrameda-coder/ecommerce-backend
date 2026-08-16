@@ -27,6 +27,6 @@ app.include_router(webhooks.router, prefix="/api/v1")
 app.include_router(addresses.router, prefix="/api/v1")
 
 
-@app.get("/api/v1/health", tags=["system"])
+@app.api_route("/api/v1/health", methods=["GET", "HEAD"], tags=["system"])
 async def health() -> dict:
     return {"status": "ok"}
