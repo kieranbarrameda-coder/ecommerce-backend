@@ -14,8 +14,8 @@ class Settings(BaseSettings):
     CLOUDINARY_CLOUD_NAME: str
     CLOUDINARY_API_KEY: str
     CLOUDINARY_API_SECRET: str
-    RESEND_API_KEY: str
-    RESEND_FROM_EMAIL: str
+    BREVO_API_KEY: str
+    BREVO_FROM_EMAIL: str
     FRONTEND_RESET_URL: str
 
 

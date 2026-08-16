@@ -13,5 +13,5 @@ slowapi
 python-dotenv
 stripe
 cloudinary
-resend[async]
+sib-api-v3-sdk
 python-multipart
