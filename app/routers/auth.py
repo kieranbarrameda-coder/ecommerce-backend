@@ -7,7 +7,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.core.email import send_password_reset_email
+from app.core.email import send_password_reset_email, send_otp_email
 from app.core.rate_limit import limiter
 from app.core.security import (
     _utcnow_naive,
@@ -19,6 +19,7 @@ from app.core.security import (
     verify_password,
 )
 from app.database import get_db
+from app.models.email_otp import EmailOTP
 from app.models.password_reset_token import PasswordResetToken
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
@@ -28,9 +29,11 @@ from app.schemas.user import (
     LogoutRequest,
     RefreshRequest,
     RegisterRequest,
+    ResendVerificationRequest,
     ResetPasswordRequest,
     TokenResponse,
     UserOut,
+    VerifyEmailRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,9 +60,9 @@ async def _issue_tokens(user: User, db: AsyncSession) -> TokenResponse:
     )
 
 
-@router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/register", response_model=dict, status_code=status.HTTP_201_CREATED)
 @limiter.limit("5/minute")
-async def register(request: Request, body: RegisterRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+async def register(request: Request, body: RegisterRequest, db: AsyncSession = Depends(get_db)) -> dict:
     existing = await db.scalar(select(User).where(User.email == body.email))
     if existing:
         raise HTTPException(
@@ -69,7 +72,22 @@ async def register(request: Request, body: RegisterRequest, db: AsyncSession = D
     user = User(email=body.email, password_hash=hash_password(body.password), full_name=body.full_name)
     db.add(user)
     await db.flush()
-    return await _issue_tokens(user, db)
+
+    otp = f"{secrets.randbelow(1000000):06d}"
+    email_otp = EmailOTP(
+        user_id=user.id,
+        otp_hash=hash_token(otp),
+        expires_at=_utcnow_naive() + timedelta(minutes=10),
+    )
+    db.add(email_otp)
+    await db.commit()
+
+    try:
+        await send_otp_email(user.email, otp)
+    except Exception:
+        logger.exception("Failed to send verification email to user %s", user.id)
+
+    return {"detail": "Registration successful. Please check your email for a verification code."}
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -81,7 +99,73 @@ async def login(request: Request, body: LoginRequest, db: AsyncSession = Depends
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
         )
+    if not user.is_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Please verify your email before logging in",
+        )
     return await _issue_tokens(user, db)
+
+
+@router.post("/verify-email", response_model=TokenResponse)
+@limiter.limit("5/minute")
+async def verify_email(request: Request, body: VerifyEmailRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+    user = await db.scalar(select(User).where(User.email == body.email))
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification code",
+        )
+
+    email_otp = await db.scalar(
+        select(EmailOTP)
+        .where(
+            EmailOTP.user_id == user.id,
+            EmailOTP.used == False,
+            EmailOTP.expires_at > _utcnow_naive(),
+        )
+        .order_by(EmailOTP.expires_at.desc())
+    )
+
+    if email_otp is None or email_otp.otp_hash != hash_token(body.otp):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification code",
+        )
+
+    user.is_verified = True
+    email_otp.used = True
+    await db.commit()
+
+    return await _issue_tokens(user, db)
+
+
+@router.post("/resend-verification")
+@limiter.limit("3/minute")
+async def resend_verification(request: Request, body: ResendVerificationRequest, db: AsyncSession = Depends(get_db)) -> dict:
+    user = await db.scalar(select(User).where(User.email == body.email))
+    if user is not None and not user.is_verified:
+        await db.execute(
+            update(EmailOTP)
+            .where(EmailOTP.user_id == user.id, EmailOTP.used == False)
+            .values(used=True)
+        )
+
+        otp = f"{secrets.randbelow(1000000):06d}"
+        email_otp = EmailOTP(
+            user_id=user.id,
+            otp_hash=hash_token(otp),
+            expires_at=_utcnow_naive() + timedelta(minutes=10),
+        )
+        db.add(email_otp)
+        await db.commit()
+
+        try:
+            await send_otp_email(user.email, otp)
+        except Exception:
+            logger.exception("Failed to send verification email to user %s", user.id)
+
+    return {"detail": "If that email exists and is unverified, a new code has been sent."}
 
 
 @router.post("/refresh", response_model=TokenResponse)

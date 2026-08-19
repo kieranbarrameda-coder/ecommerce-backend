@@ -21,3 +21,14 @@ async def send_password_reset_email(to_email: str, reset_url: str) -> None:
         text_content=f"Reset your password by visiting: {reset_url}\n\nThis link expires in 30 minutes.",
     )
     await run_in_threadpool(api_instance.send_transac_email, send_smtp_email)
+
+
+async def send_otp_email(to_email: str, otp: str) -> None:
+    send_smtp_email = sib_api_v3_sdk.SendSmtpEmail(
+        to=[{"email": to_email}],
+        sender={"email": settings.BREVO_FROM_EMAIL},
+        subject="Your verification code",
+        html_content=f'<p>Your email verification code is:</p><h2>{otp}</h2><p>This code expires in 10 minutes.</p>',
+        text_content=f"Your email verification code is: {otp}\n\nThis code expires in 10 minutes.",
+    )
+    await run_in_threadpool(api_instance.send_transac_email, send_smtp_email)
